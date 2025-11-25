@@ -107,8 +107,11 @@ def query(query_sql, args=(), one=False):
         return execute(query_sql, args, fetchall=True)
 
 
-# ----------------- Inicialização do DB -----------------
-def init_db_file_or_fallback():
+# ----------------- Inicialização do DB e Admin -----------------
+# Esta função será chamada dentro de um contexto de aplicação
+def init_db_and_admin_user():
+    print("Executando init_db_and_admin_user()...")
+    # Para SQLite: Cria o DB e as tabelas se não existirem
     if db_type == 'sqlite' and not Path(DB_FILE).exists():
         print(f"Criando banco de dados SQLite local em {DB_FILE}...")
         db = sqlite3.connect(DB_FILE)
@@ -162,48 +165,43 @@ def init_db_file_or_fallback():
                     ip_address TEXT
                 );
                 """)
+            print("Tabelas SQLite criadas.")
         finally:
             db.close()
     
-    # Lógica de criação de admin para ambos os tipos de DB
-    db = get_db()
+    # Lógica de criação de admin para ambos os tipos de DB (SQLite e PostgreSQL)
     try:
-        # Verifica se o admin já existe
+        # A função query já usa get_db(), que estará no contexto correto
         admin_check = query('SELECT id FROM usuarios WHERE username = %s', (ADMIN_USERNAME,), one=True)
         if not admin_check:
             print(f"Criando usuário admin ({ADMIN_USERNAME})...")
             senha_hash = generate_password_hash('admin123')
             # Insere admin com saldo inicial 0.00 e is_admin como TRUE
+            # No SQLite, True vira 1. No Postgres, True é True.
             execute(
                 'INSERT INTO usuarios (username, senha_hash, saldo, is_admin) VALUES (%s,%s,%s,%s)',
-                (ADMIN_USERNAME, senha_hash, str(Decimal('0.00')), True), # Usar str(Decimal) e True (Boolean)
+                (ADMIN_USERNAME, senha_hash, str(Decimal('0.00')), True), 
                 commit=True
             )
+            print("Usuário admin criado com sucesso.")
         else:
-            # Atualiza is_admin para garantir que o admin sempre seja admin
+            # Garante que o usuário admin sempre tenha a flag is_admin como TRUE
+            # Isso é importante se o admin foi criado com is_admin=0 por engano
             execute('UPDATE usuarios SET is_admin = %s WHERE username = %s', (True, ADMIN_USERNAME), commit=True)
+            print("Usuário admin verificado/atualizado.")
 
     except Exception as e:
-        print(f'ERRO ao inicializar DB: {e}')
+        print(f'ERRO ao inicializar DB (criação/verificação do admin): {e}')
         traceback.print_exc()
-        raise RuntimeError("Falha crítica na inicialização do banco de dados.")
+        # Não levante o RuntimeError aqui, apenas logue. Se o DB estiver realmente
+        # inacessível, outros erros acontecerão, mas não queremos impedir o boot por completo.
+        
 
-# O SQL para PostgreSQL será executado uma vez no Render via `psql` ou `render.yaml`
-# ou automaticamente pela primeira conexão se as tabelas não existirem.
-# Por simplicidade e para o Render, o `init_db_file_or_fallback` vai se focar
-# na criação do admin, assumindo que as tabelas já foram criadas via SQL externo ou um script.
-
-# Em um deploy real no Render, as tabelas são criadas de forma diferente:
-# 1. Manualmente, usando o cliente psql com o script `schema.sql` (que precisa ser adaptado para Postgres)
-# 2. Via um serviço de "Database Migrations" (ex: Alembic com SQLAlchemy)
-# Como estamos usando 'psycopg2' diretamente, o ideal é ter um `schema.sql` para PostgreSQL.
-
-# Executar a inicialização do DB (criação do admin e, se for SQLite, as tabelas)
-try:
-    init_db_file_or_fallback()
-except Exception as e:
-    print('ERRO ao inicializar DB:', e)
-    traceback.print_exc()
+# CHAME A FUNÇÃO DE INICIALIZAÇÃO DO DB APÓS O CONTEXTO DA APLICAÇÃO ESTAR DISPONÍVEL
+@app.before_first_request
+def setup_on_first_request():
+    print("Executando setup_on_first_request()...")
+    init_db_and_admin_user()
 
 
 # ----------------- Utilitários Financeiros & Segurança -----------------
@@ -248,15 +246,14 @@ def create_transaction_atomic(de_id, para_id, tipo, valor_decimal, descricao='')
 
     db = get_db()
     try:
-        # Start transaction (implicitly done with psycopg2 if autocommit is off)
-        cur = db.cursor()
-        
+        cur = db.cursor() # Usar cursor simples aqui, pois estamos fazendo operações de UPDATE/SELECT FOR UPDATE
+
         # 1. Verifica e Debita Origem (se houver)
         if de_id:
             cur.execute('SELECT saldo FROM usuarios WHERE id = %s FOR UPDATE', (de_id,)) # Bloqueia a linha
             row = cur.fetchone()
             if not row: raise ValueError("Usuário de origem não encontrado.")
-            saldo_origem = Decimal(row[0]) # Acessa pelo índice 0 pois não é DictCursor aqui
+            saldo_origem = Decimal(row[0]) # Acessa pelo índice 0
             if saldo_origem < valor_decimal:
                 raise ValueError(f"Saldo insuficiente. Disponível: P {saldo_origem}")
             
@@ -266,18 +263,18 @@ def create_transaction_atomic(de_id, para_id, tipo, valor_decimal, descricao='')
         # 2. Credita Destino (se houver)
         if para_id:
             cur.execute('SELECT saldo FROM usuarios WHERE id = %s FOR UPDATE', (para_id,)) # Bloqueia a linha
-            if not cur.fetchone(): raise ValueError("Usuário destino não encontrado.")
+            if not cur.fetchone(): raise ValueError("Usuário destino não encontrado.") # Apenas verifica existência
             
             cur.execute('UPDATE usuarios SET saldo = saldo + %s WHERE id = %s', (str(valor_decimal), para_id))
 
         # 3. Registra Transação
         cur.execute('''INSERT INTO transacoes (de_usuario, para_usuario, tipo, valor, descricao) 
-                        VALUES (%s,%s,%s,%s,%s)''',
+                            VALUES (%s,%s,%s,%s,%s)''',
                     (de_id, para_id, tipo, str(valor_decimal), descricao))
         
         db.commit() # Commit explícito
         log_auditoria('transacao_sucesso', f'{tipo} | P {valor_decimal} | {descricao}', usuario_id=de_id or para_id)
-        return True # Retornar True ou None, lastrowid não é fácil de obter uniformemente
+        return True 
     except Exception as e:
         db.rollback() # Rollback em caso de erro
         log_auditoria('transacao_falha', f'Erro: {e} | {tipo}', usuario_id=de_id or para_id)
@@ -315,13 +312,11 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         senha = request.form.get('senha', '')
-        # Usar %s para PostgreSQL
-        user = query('SELECT id, username, senha_hash FROM usuarios WHERE username = %s', (username,), one=True)
+        user = query('SELECT id, username, senha_hash, is_admin FROM usuarios WHERE username = %s', (username,), one=True)
         if user and check_password_hash(user['senha_hash'], senha):
             session['user_id'] = user['id']
             session['username'] = user['username']
-            # O campo 'is_admin' agora é um BOOLEAN no Postgres, mas é lido como bool pelo DictCursor
-            session['is_admin'] = (user['username'] == ADMIN_USERNAME) # Garante que ADMIN_USERNAME é admin
+            session['is_admin'] = user['is_admin'] # Lê o status de admin diretamente do DB
             log_auditoria('login', f'Usuário {username} logado', usuario_id=user['id'])
             return redirect(url_for('dashboard'))
         flash('Usuário ou senha inválidos.', 'danger')
@@ -503,7 +498,7 @@ def admin_dashboard():
         WHERE aprovado = 0 ORDER BY r.criado_em ASC''')
 
     # Todos os Usuários para gerenciamento
-    users = query('SELECT id, username, saldo FROM usuarios ORDER BY id ASC')
+    users = query('SELECT id, username, saldo, is_admin FROM usuarios ORDER BY id ASC') # Adicionado is_admin para exibição
     
     # Log de Auditoria
     auditoria = query('''
@@ -542,7 +537,7 @@ def process_request(req_id, action):
         tipo = r['tipo']
 
         if action == 'reject':
-            execute('UPDATE requests SET aprovado = -1 WHERE id = %s', (req_id,), commit=True)
+            execute('UPDATE requests SET aprovado = %s WHERE id = %s', (-1, req_id), commit=True)
             flash(f'Request #{req_id} rejeitado.', 'warning')
             log_auditoria('admin_reject', f'Req #{req_id} rejeitado pelo admin {admin_id}', usuario_id=admin_id)
         
@@ -553,7 +548,7 @@ def process_request(req_id, action):
             elif tipo == 'withdraw':
                 create_transaction_atomic(usuario_id, None, 'saque_aprovado', valor, f'Saque Ref #{req_id}')
             
-            execute('UPDATE requests SET aprovado = 1 WHERE id = %s', (req_id,), commit=True)
+            execute('UPDATE requests SET aprovado = %s WHERE id = %s', (1, req_id), commit=True)
             flash(f'Request #{req_id} aprovado e processado com sucesso.', 'success')
             log_auditoria('admin_approve', f'Req #{req_id} aprovado pelo admin {admin_id}', usuario_id=admin_id)
 
@@ -635,4 +630,5 @@ def mark_message_read(message_id):
 
 if __name__ == '__main__':
     # Em desenvolvimento, o app.run irá criar o DB SQLite
+    # e a função before_first_request garantirá o admin
     app.run(debug=True)
