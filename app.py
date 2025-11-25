@@ -8,9 +8,7 @@ from decimal import Decimal, ROUND_DOWN, InvalidOperation
 # IMPORTS PARA POSTGRESQL
 import psycopg2
 from psycopg2.extras import DictCursor
-# A urllib.parse.urlparse não será mais usada para construir a conexão,
-# mas mantida se você precisar depurar a URL.
-from urllib.parse import urlparse 
+from urllib.parse import urlparse
 # FIM NOVOS IMPORTS
 
 from flask import (
@@ -20,7 +18,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from pathlib import Path
 
 # ----------------- Config -----------------
-# Define o caminho do DB SQLite para desenvolvimento local
 DB_FILE = 'future_bank.db'
 ADMIN_USERNAME = 'admin'
 
@@ -29,55 +26,49 @@ ADMIN_USERNAME = 'admin'
 template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
 app = Flask(__name__, template_folder=template_dir)
 
-
-# Configuração de Ambiente para Produção/Render
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_urlsafe(32))
 
 DB_URL = os.environ.get('DATABASE_URL')
 
-# VARIÁVEL GLOBAL para controlar o tipo de banco de dados
-# Será definida uma vez na inicialização
+# VARIÁVEL GLOBAL para controlar o tipo de banco de dados.
+# Será definida uma vez na inicialização do módulo.
 global_db_type = 'sqlite' # Default para desenvolvimento local
 
-if not DB_URL:
+if DB_URL:
+    print("Detectado DATABASE_URL. Tentando usar PostgreSQL (Neon)...")
+    global_db_type = 'postgresql'
+else:
     print(f"ATENÇÃO: DATABASE_URL não definida. Usando SQLite localmente em: {DB_FILE}")
     global_db_type = 'sqlite'
-else:
-    print("Tentando conectar ao PostgreSQL (Neon)...")
-    global_db_type = 'postgresql'
-
 
 # ----------------- Helpers DB -----------------
 def get_db():
     if 'db' not in g:
-        current_db_type = global_db_type # Usa o tipo de DB global
+        # Usa o tipo de DB global para a primeira tentativa de conexão
+        conn_type_for_this_request = global_db_type 
         
-        if current_db_type == 'postgresql':
+        if conn_type_for_this_request == 'postgresql':
             try:
-                # CORREÇÃO CRÍTICA: Passa a URL completa diretamente para psycopg2.connect
                 g.db = psycopg2.connect(DB_URL, sslmode='require')
-                g.db.autocommit = False
+                g.db.autocommit = False # Usaremos commits explícitos
                 print("Conexão com PostgreSQL estabelecida com sucesso.")
             except Exception as e:
                 print(f"ERRO DE CONEXÃO AO POSTGRESQL (tentativa): {e}")
                 traceback.print_exc()
                 # Se a conexão com Postgres falhar, tentar SQLite como fallback
                 print("Fallback: Conexão com PostgreSQL falhou. Tentando conectar ao SQLite localmente...")
-                current_db_type = 'sqlite' # Altera o tipo SOMENTE para esta instância de conexão
-                g.db = sqlite3.connect(DB_FILE)
-                g.db.row_factory = sqlite3.Row
-                g.db.execute('PRAGMA foreign_keys = ON;')
-                print("Conexão com SQLite estabelecida (fallback).")
+                conn_type_for_this_request = 'sqlite' # Altera o tipo SOMENTE para esta instância de conexão
         
-        if current_db_type == 'sqlite': # Se for o tipo SQLite desde o início ou após fallback
+        # Se conn_type_for_this_request for 'sqlite' (inicial ou fallback)
+        if conn_type_for_this_request == 'sqlite':
             g.db = sqlite3.connect(DB_FILE)
             g.db.row_factory = sqlite3.Row
             g.db.execute('PRAGMA foreign_keys = ON;')
             if global_db_type == 'sqlite': # Só imprime se for o modo padrão
                 print("Conexão com SQLite estabelecida.")
-    
-    # Armazena o tipo de DB usado na conexão atual no g para acesso posterior
-    g.current_db_type = current_db_type 
+        
+        # Armazena o tipo de DB usado na conexão atual no g para acesso posterior
+        g.current_db_type_used = conn_type_for_this_request 
     return g.db
 
 @app.teardown_appcontext
@@ -88,7 +79,7 @@ def close_connection(exception):
 
 def execute(query_sql, params=(), fetchone=False, fetchall=False, commit=False):
     db = get_db()
-    current_db_type = g.current_db_type # Obtém o tipo de DB da conexão atual
+    current_db_type = g.current_db_type_used # Obtém o tipo de DB da conexão atual
 
     # Adapta os placeholders de %s para ? se estivermos no SQLite
     if current_db_type == 'sqlite':
@@ -128,11 +119,8 @@ def query(query_sql, args=(), one=False):
 def init_db_and_admin_user():
     print("Executando init_db_and_admin_user()...")
     
-    # Para SQLite: Cria o DB e as tabelas se não existirem
-    # Esta parte é exclusiva para o SQLite e só deve ser executada se o DB_URL não estiver definido
-    # OU se a conexão com PostgreSQL falhou e estamos em fallback.
-    # A verificação 'not Path(DB_FILE).exists()' evita recriar tabelas existentes.
-    if g.current_db_type == 'sqlite' and not Path(DB_FILE).exists():
+    # Usa global_db_type aqui, pois está acessível e definido no escopo do módulo
+    if global_db_type == 'sqlite' and not Path(DB_FILE).exists():
         print(f"Criando banco de dados SQLite local em {DB_FILE}...")
         db_sqlite = sqlite3.connect(DB_FILE) # Conexão separada para a criação inicial
         try:
@@ -209,7 +197,6 @@ def init_db_and_admin_user():
     except Exception as e:
         print(f'ERRO ao inicializar DB (criação/verificação do admin): {e}')
         traceback.print_exc()
-        # Não levante o RuntimeError aqui, apenas logue.
 
 
 # MÉTODO DE INICIALIZAÇÃO PARA FLASK 3.x
@@ -220,8 +207,11 @@ with app.app_context():
 def setup_on_first_request():
     if not app._initialization_done:
         print("Executando setup_on_first_request() (uma vez) ...")
+        # Garante que uma conexão seja estabelecida antes de init_db_and_admin_user()
+        # para que g.current_db_type_used esteja disponível se necessário
+        get_db() 
         init_db_and_admin_user()
-        app._initialization_done = True # Marca como executado
+        app._initialization_done = True
 
 
 # ----------------- Utilitários Financeiros & Segurança -----------------
@@ -265,7 +255,7 @@ def create_transaction_atomic(de_id, para_id, tipo, valor_decimal, descricao='')
         raise ValueError("Valor de transação inválido.")
 
     db = get_db()
-    current_db_type = g.current_db_type
+    current_db_type = g.current_db_type_used
 
     try:
         cur = db.cursor()
