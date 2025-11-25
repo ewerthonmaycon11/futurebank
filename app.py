@@ -197,11 +197,17 @@ def init_db_and_admin_user():
         # inacessível, outros erros acontecerão, mas não queremos impedir o boot por completo.
         
 
-# CHAME A FUNÇÃO DE INICIALIZAÇÃO DO DB APÓS O CONTEXTO DA APLICAÇÃO ESTAR DISPONÍVEL
-@app.before_first_request
+# NOVO MÉTODO DE INICIALIZAÇÃO PARA FLASK 3.x
+# Usamos um atributo customizado para garantir que seja executado apenas uma vez.
+with app.app_context():
+    app._initialization_done = False # Adiciona um atributo ao objeto app
+
+@app.before_request
 def setup_on_first_request():
-    print("Executando setup_on_first_request()...")
-    init_db_and_admin_user()
+    if not app._initialization_done:
+        print("Executando setup_on_first_request() (uma vez) ...")
+        init_db_and_admin_user()
+        app._initialization_done = True # Marca como executado
 
 
 # ----------------- Utilitários Financeiros & Segurança -----------------
@@ -630,5 +636,5 @@ def mark_message_read(message_id):
 
 if __name__ == '__main__':
     # Em desenvolvimento, o app.run irá criar o DB SQLite
-    # e a função before_first_request garantirá o admin
+    # e a função before_request garantirá o admin na primeira requisição
     app.run(debug=True)
