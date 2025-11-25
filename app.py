@@ -1,14 +1,14 @@
 import os
 import secrets
 import traceback
-import sqlite3 # Mantido para fallback local
+import sqlite3
 from datetime import datetime
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 
-# NOVOS IMPORTS PARA POSTGRESQL
+# IMPORTS PARA POSTGRESQL
 import psycopg2
-from psycopg2.extras import DictCursor # Para retornar rows como dicionários
-from urllib.parse import urlparse
+from psycopg2.extras import DictCursor
+from urllib.parse import urlparse # Mantido para depuração, mas usaremos a URL completa
 # FIM NOVOS IMPORTS
 
 from flask import (
@@ -19,48 +19,51 @@ from pathlib import Path
 
 # ----------------- Config -----------------
 # Define o caminho do DB SQLite para desenvolvimento local
-DB_FILE = 'future_bank.db' # Renomeei para evitar conflito com DB_PATH
+DB_FILE = 'future_bank.db'
 ADMIN_USERNAME = 'admin'
 
 app = Flask(__name__)
 
 # Configuração de Ambiente para Produção/Render
-# Lê a SECRET_KEY de uma variável de ambiente em produção, ou usa uma padrão para dev
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_urlsafe(32))
 
-# Variável de conexão com o Banco de Dados (PostgreSQL via Render/Neon)
 DB_URL = os.environ.get('DATABASE_URL')
 if not DB_URL:
-    # Se DATABASE_URL não estiver configurada (ambiente de desenvolvimento local)
-    print(f"ATENÇÃO: Usando SQLite localmente em: {DB_FILE}")
+    print(f"ATENÇÃO: DATABASE_URL não definida. Usando SQLite localmente em: {DB_FILE}")
     db_type = 'sqlite'
 else:
     print("Conectando-se ao PostgreSQL (Neon)...")
     db_type = 'postgresql'
 
-# ----------------- Helpers DB -----------------
-# A função get_db() e execute() agora são dinâmicas para SQLite ou PostgreSQL
+# Verifica se a pasta 'templates' existe (DEBUGGING DE TEMPLATE_NOT_FOUND)
+if not Path(app.template_folder).is_dir():
+    print(f"ERRO: Pasta de templates não encontrada em: {app.template_folder}")
+    print("Por favor, certifique-se de que a pasta 'templates' existe na raiz do seu projeto.")
+    # Isso pode causar um erro fatal, mas é para deixar claro o problema
+    # Em produção, um TemplateNotFound ainda ocorrerá se o arquivo não estiver lá
+    # mas esta mensagem ajuda a diagnosticar a pasta em si.
 
+# ----------------- Helpers DB -----------------
 def get_db():
     if 'db' not in g:
         if db_type == 'postgresql':
             try:
-                # Parseia a URL de conexão para obter hostname, dbname, user, password, port
-                url = urlparse(DB_URL)
-                g.db = psycopg2.connect(
-                    database=url.path[1:],
-                    user=url.username,
-                    password=url.password,
-                    host=url.hostname,
-                    port=url.port,
-                    sslmode='require' # Necessário para Neon
-                )
-                g.db.autocommit = False # Gerenciamos commits manualmente
+                # CORREÇÃO CRÍTICA: Passa a URL completa diretamente para psycopg2.connect
+                # psycop2 é inteligente o suficiente para parsear a URL de conexão.
+                g.db = psycopg2.connect(DB_URL, sslmode='require')
+                g.db.autocommit = False
+                print("Conexão com PostgreSQL estabelecida com sucesso.")
             except Exception as e:
-                print(f"ERRO DE CONEXÃO AO POSTGRESQL: {e}")
+                print(f"ERRO DE CONEXÃO AO POSTGRESQL (try 1): {e}")
                 traceback.print_exc()
-                raise RuntimeError(f"Falha ao conectar ao Neon: {e}")
-        else: # SQLite fallback
+                # Se a conexão com Postgres falhar, tentar SQLite como fallback
+                print("Fallback: Tentando conectar ao SQLite localmente...")
+                db_type = 'sqlite' # Altera o tipo para futuras operações
+                g.db = sqlite3.connect(DB_FILE)
+                g.db.row_factory = sqlite3.Row
+                g.db.execute('PRAGMA foreign_keys = ON;')
+                print("Conexão com SQLite estabelecida (fallback).")
+        else: # SQLite fallback ou se DB_URL não foi definida
             g.db = sqlite3.connect(DB_FILE)
             g.db.row_factory = sqlite3.Row
             g.db.execute('PRAGMA foreign_keys = ON;')
@@ -75,9 +78,12 @@ def close_connection(exception):
 def execute(query_sql, params=(), fetchone=False, fetchall=False, commit=False):
     db = get_db()
     
+    # Adapta os placeholders de %s para ? se estivermos no SQLite
+    if db_type == 'sqlite':
+        query_sql = query_sql.replace('%s', '?')
+
     if db_type == 'postgresql':
-        cur = db.cursor(cursor_factory=DictCursor) # Usar DictCursor para retornar dicionários
-        # Psycopg2 exige que os parâmetros sejam uma tupla, mesmo que seja apenas um
+        cur = db.cursor(cursor_factory=DictCursor)
         if not isinstance(params, (tuple, list)):
             params = (params,)
         cur.execute(query_sql, params)
@@ -91,15 +97,16 @@ def execute(query_sql, params=(), fetchone=False, fetchall=False, commit=False):
 
     if fetchone:
         result = cur.fetchone()
+        # Retorna dicionário para PostgreSQL, Row para SQLite
         return dict(result) if result and db_type == 'postgresql' else result
     
     if fetchall:
         results = cur.fetchall()
+        # Retorna lista de dicionários para PostgreSQL, lista de Rows para SQLite
         return [dict(row) for row in results] if results and db_type == 'postgresql' else results
     
-    return cur.lastrowid if db_type == 'sqlite' and commit else None # lastrowid para SQLite
+    return cur.lastrowid if db_type == 'sqlite' and commit else None
 
-# Adaptação da função query para usar execute
 def query(query_sql, args=(), one=False):
     if one:
         return execute(query_sql, args, fetchone=True)
@@ -108,15 +115,16 @@ def query(query_sql, args=(), one=False):
 
 
 # ----------------- Inicialização do DB e Admin -----------------
-# Esta função será chamada dentro de um contexto de aplicação
 def init_db_and_admin_user():
     print("Executando init_db_and_admin_user()...")
+    
     # Para SQLite: Cria o DB e as tabelas se não existirem
+    # Esta parte é exclusiva para o SQLite
     if db_type == 'sqlite' and not Path(DB_FILE).exists():
         print(f"Criando banco de dados SQLite local em {DB_FILE}...")
         db = sqlite3.connect(DB_FILE)
         try:
-            with db: # Context manager para commit/rollback automáticos
+            with db:
                 db.executescript("""
                 CREATE TABLE IF NOT EXISTS usuarios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,15 +177,14 @@ def init_db_and_admin_user():
         finally:
             db.close()
     
-    # Lógica de criação de admin para ambos os tipos de DB (SQLite e PostgreSQL)
+    # Lógica de criação de admin para ambos os tipos de DB
     try:
         # A função query já usa get_db(), que estará no contexto correto
+        # E a função execute agora adapta os placeholders para SQLite se necessário
         admin_check = query('SELECT id FROM usuarios WHERE username = %s', (ADMIN_USERNAME,), one=True)
         if not admin_check:
             print(f"Criando usuário admin ({ADMIN_USERNAME})...")
             senha_hash = generate_password_hash('admin123')
-            # Insere admin com saldo inicial 0.00 e is_admin como TRUE
-            # No SQLite, True vira 1. No Postgres, True é True.
             execute(
                 'INSERT INTO usuarios (username, senha_hash, saldo, is_admin) VALUES (%s,%s,%s,%s)',
                 (ADMIN_USERNAME, senha_hash, str(Decimal('0.00')), True), 
@@ -185,20 +192,16 @@ def init_db_and_admin_user():
             )
             print("Usuário admin criado com sucesso.")
         else:
-            # Garante que o usuário admin sempre tenha a flag is_admin como TRUE
-            # Isso é importante se o admin foi criado com is_admin=0 por engano
             execute('UPDATE usuarios SET is_admin = %s WHERE username = %s', (True, ADMIN_USERNAME), commit=True)
             print("Usuário admin verificado/atualizado.")
 
     except Exception as e:
         print(f'ERRO ao inicializar DB (criação/verificação do admin): {e}')
         traceback.print_exc()
-        # Não levante o RuntimeError aqui, apenas logue. Se o DB estiver realmente
-        # inacessível, outros erros acontecerão, mas não queremos impedir o boot por completo.
-        
+        # Não levante o RuntimeError aqui, apenas logue.
+
 
 # NOVO MÉTODO DE INICIALIZAÇÃO PARA FLASK 3.x
-# Usamos um atributo customizado para garantir que seja executado apenas uma vez.
 with app.app_context():
     app._initialization_done = False # Adiciona um atributo ao objeto app
 
@@ -219,7 +222,7 @@ def to_decimal(value):
         d = value
     else:
         try:
-            d = Decimal(str(value).replace(',', '.')) # Aceita vírgula como separador
+            d = Decimal(str(value).replace(',', '.'))
         except (InvalidOperation, ValueError):
             raise ValueError("Valor inválido.")
     
@@ -252,37 +255,58 @@ def create_transaction_atomic(de_id, para_id, tipo, valor_decimal, descricao='')
 
     db = get_db()
     try:
-        cur = db.cursor() # Usar cursor simples aqui, pois estamos fazendo operações de UPDATE/SELECT FOR UPDATE
+        cur = db.cursor()
 
         # 1. Verifica e Debita Origem (se houver)
         if de_id:
-            cur.execute('SELECT saldo FROM usuarios WHERE id = %s FOR UPDATE', (de_id,)) # Bloqueia a linha
+            # Usar 'FOR UPDATE' com SQLite não é suportado da mesma forma,
+            # mas psycopg2 exige. Vamos adaptar o SQL para SQLite.
+            if db_type == 'postgresql':
+                cur.execute('SELECT saldo FROM usuarios WHERE id = %s FOR UPDATE', (de_id,))
+            else: # SQLite
+                cur.execute('SELECT saldo FROM usuarios WHERE id = ?', (de_id,))
+
             row = cur.fetchone()
             if not row: raise ValueError("Usuário de origem não encontrado.")
-            saldo_origem = Decimal(row[0]) # Acessa pelo índice 0
+            saldo_origem = Decimal(row[0])
             if saldo_origem < valor_decimal:
                 raise ValueError(f"Saldo insuficiente. Disponível: P {saldo_origem}")
             
             novo_origem = saldo_origem - valor_decimal
-            cur.execute('UPDATE usuarios SET saldo = %s WHERE id = %s', (str(novo_origem), de_id))
+            if db_type == 'postgresql':
+                cur.execute('UPDATE usuarios SET saldo = %s WHERE id = %s', (str(novo_origem), de_id))
+            else: # SQLite
+                cur.execute('UPDATE usuarios SET saldo = ? WHERE id = ?', (str(novo_origem), de_id))
 
         # 2. Credita Destino (se houver)
         if para_id:
-            cur.execute('SELECT saldo FROM usuarios WHERE id = %s FOR UPDATE', (para_id,)) # Bloqueia a linha
-            if not cur.fetchone(): raise ValueError("Usuário destino não encontrado.") # Apenas verifica existência
+            if db_type == 'postgresql':
+                cur.execute('SELECT saldo FROM usuarios WHERE id = %s FOR UPDATE', (para_id,))
+            else: # SQLite
+                cur.execute('SELECT saldo FROM usuarios WHERE id = ?', (para_id,))
             
-            cur.execute('UPDATE usuarios SET saldo = saldo + %s WHERE id = %s', (str(valor_decimal), para_id))
+            if not cur.fetchone(): raise ValueError("Usuário destino não encontrado.")
+            
+            if db_type == 'postgresql':
+                cur.execute('UPDATE usuarios SET saldo = saldo + %s WHERE id = %s', (str(valor_decimal), para_id))
+            else: # SQLite
+                cur.execute('UPDATE usuarios SET saldo = saldo + ? WHERE id = ?', (str(valor_decimal), para_id))
 
         # 3. Registra Transação
-        cur.execute('''INSERT INTO transacoes (de_usuario, para_usuario, tipo, valor, descricao) 
-                            VALUES (%s,%s,%s,%s,%s)''',
-                    (de_id, para_id, tipo, str(valor_decimal), descricao))
+        if db_type == 'postgresql':
+            cur.execute('''INSERT INTO transacoes (de_usuario, para_usuario, tipo, valor, descricao) 
+                                VALUES (%s,%s,%s,%s,%s)''',
+                        (de_id, para_id, tipo, str(valor_decimal), descricao))
+        else: # SQLite
+             cur.execute('''INSERT INTO transacoes (de_usuario, para_usuario, tipo, valor, descricao) 
+                                VALUES (?,?,?,?,?)''',
+                        (de_id, para_id, tipo, str(valor_decimal), descricao))
         
-        db.commit() # Commit explícito
+        db.commit()
         log_auditoria('transacao_sucesso', f'{tipo} | P {valor_decimal} | {descricao}', usuario_id=de_id or para_id)
         return True 
     except Exception as e:
-        db.rollback() # Rollback em caso de erro
+        db.rollback()
         log_auditoria('transacao_falha', f'Erro: {e} | {tipo}', usuario_id=de_id or para_id)
         raise
 
@@ -322,7 +346,7 @@ def login():
         if user and check_password_hash(user['senha_hash'], senha):
             session['user_id'] = user['id']
             session['username'] = user['username']
-            session['is_admin'] = user['is_admin'] # Lê o status de admin diretamente do DB
+            session['is_admin'] = bool(user['is_admin']) # Garante que é booleano
             log_auditoria('login', f'Usuário {username} logado', usuario_id=user['id'])
             return redirect(url_for('dashboard'))
         flash('Usuário ou senha inválidos.', 'danger')
@@ -360,7 +384,6 @@ def register():
                 return redirect(url_for('register'))
 
             senha_hash = generate_password_hash(senha)
-            # is_admin para novos usuários é False
             execute('INSERT INTO usuarios (username, senha_hash, saldo, is_admin) VALUES (%s,%s,%s,%s)',
                     (username, senha_hash, str(Decimal('0.00')), False), commit=True)
             log_auditoria('registro', f'Novo usuário: {username}')
@@ -379,12 +402,9 @@ def dashboard():
     uid = session['user_id']
     
     user = query('SELECT * FROM usuarios WHERE id = %s', (uid,), one=True)
-    # Últimas 5 mensagens
     msgs = query('SELECT * FROM mensagens WHERE para_usuario = %s ORDER BY criado_em DESC LIMIT 5', (uid,))
-    # Últimos 10 requests do usuário
     meus_requests = query('SELECT * FROM requests WHERE usuario_id = %s ORDER BY criado_em DESC LIMIT 10', (uid,))
     
-    # Busca transações recentes (enviadas ou recebidas)
     transacoes_recentes = query('''
         SELECT t.*, u_de.username as de_nome, u_para.username as para_nome 
         FROM transacoes t
@@ -407,22 +427,16 @@ def realizar_transferencia():
         valor_str = request.form.get('valor', '')
         senha_confirmacao = request.form.get('senha_confirmacao', '')
 
-        # 1. Validações Básicas
         if not destinatario_user: raise ValueError("Destinatário é obrigatório.")
         if not senha_confirmacao: raise ValueError("Senha de confirmação é obrigatória.")
         if destinatario_user == session['username']: raise ValueError("Não pode transferir para si mesmo.")
 
-        # 2. Valida Valor
         valor_dec = to_decimal(valor_str)
-
-        # 3. Valida Senha ANTES de tentar a transação
         verificar_senha_atual(uid, senha_confirmacao)
 
-        # 4. Busca Destinatário
         target = query('SELECT id FROM usuarios WHERE username = %s', (destinatario_user,), one=True)
         if not target: raise ValueError("Usuário destinatário não encontrado.")
 
-        # 5. Executa Transação Atômica
         create_transaction_atomic(uid, target['id'], 'transferencia', valor_dec, f'Transferência para {destinatario_user}')
         
         flash(f'Sucesso! P {valor_dec} enviados para {destinatario_user}.', 'success')
@@ -443,20 +457,18 @@ def solicitar_operacao():
     uid = session['user_id']
 
     try:
-        tipo = request.form.get('tipo_operacao') # 'deposit' ou 'withdraw'
+        tipo = request.form.get('tipo_operacao')
         valor_str = request.form.get('valor')
         senha_confirmacao = request.form.get('senha_confirmacao', '')
 
         if tipo not in ['deposit', 'withdraw']: raise ValueError("Tipo de operação inválido.")
         if not senha_confirmacao: raise ValueError("Senha de confirmação é obrigatória.")
         
-        # 1. Valida Valor e Senha
         valor_dec = to_decimal(valor_str)
         verificar_senha_atual(uid, senha_confirmacao)
 
-        # 2. Cria o Request
         execute('INSERT INTO requests (usuario_id, tipo, valor, aprovado) VALUES (%s,%s,%s,%s)',
-                (uid, tipo, str(valor_dec), 0), commit=True) # 0 é o default para 'pendente'
+                (uid, tipo, str(valor_dec), 0), commit=True)
         
         tipo_label = "Depósito" if tipo == "deposit" else "Saque"
         flash(f'Solicitação de {tipo_label} de P {valor_dec} enviada para análise.', 'info')
@@ -481,7 +493,6 @@ def history():
         LEFT JOIN usuarios u2 ON t.para_usuario = u2.id
     '''
     
-    # Admin vê tudo, usuário comum vê apenas as suas
     if session.get('is_admin'):
         rows = query(sql_base + ' ORDER BY t.criado_em DESC LIMIT 500')
         flash('Modo Admin: Visualizando histórico global.', 'warning')
@@ -495,37 +506,33 @@ def history():
 @app.route('/admin')
 def admin_dashboard():
     if not session.get('is_admin'):
-        abort(403) # Forbidden
+        abort(403)
     
-    # Requests Pendentes
     requests_pendentes = query('''
         SELECT r.*, u.username FROM requests r 
         JOIN usuarios u ON r.usuario_id = u.id 
         WHERE aprovado = 0 ORDER BY r.criado_em ASC''')
 
-    # Todos os Usuários para gerenciamento
-    users = query('SELECT id, username, saldo, is_admin FROM usuarios ORDER BY id ASC') # Adicionado is_admin para exibição
+    users = query('SELECT id, username, saldo, is_admin FROM usuarios ORDER BY id ASC')
     
-    # Log de Auditoria
     auditoria = query('''
         SELECT a.*, u.username FROM auditoria a
         LEFT JOIN usuarios u ON a.usuario_id = u.id
-        ORDER BY a.criado_em DESC LIMIT 100''') # Aumentado limite para admin
+        ORDER BY a.criado_em DESC LIMIT 100''')
 
-    # Histórico Global de Transações (Admin)
     transacoes_globais = query('''
         SELECT t.*, u_de.username as de_nome, u_para.username as para_nome 
         FROM transacoes t
         LEFT JOIN usuarios u_de ON t.de_usuario = u_de.id
         LEFT JOIN usuarios u_para ON t.para_usuario = u_para.id
-        ORDER BY t.criado_em DESC LIMIT 100''') # Aumentado limite para admin
+        ORDER BY t.criado_em DESC LIMIT 100''')
 
 
     return render_template('admin.html', 
                             requests_pendentes=requests_pendentes, 
                             users=users,
                             auditoria=auditoria,
-                            transacoes=transacoes_globais) # Passando dados adicionais
+                            transacoes=transacoes_globais)
 
 @app.route('/admin/request/<int:req_id>/<action>', methods=['POST'])
 def process_request(req_id, action):
@@ -548,7 +555,6 @@ def process_request(req_id, action):
             log_auditoria('admin_reject', f'Req #{req_id} rejeitado pelo admin {admin_id}', usuario_id=admin_id)
         
         elif action == 'approve':
-            # Processa financeiramente
             if tipo == 'deposit':
                 create_transaction_atomic(None, usuario_id, 'deposito_aprovado', valor, f'Depósito Ref #{req_id}')
             elif tipo == 'withdraw':
@@ -573,9 +579,8 @@ def admin_reset_password():
 
         if not user_id: raise ValueError("ID de usuário inválido.")
 
-        # Gerar senha se não for fornecida, ou usar a fornecida
         if not nova_senha:
-            nova_senha = secrets.token_urlsafe(8) # Senha aleatória de 8 caracteres
+            nova_senha = secrets.token_urlsafe(8)
             flash(f'Senha para o usuário ID {user_id} resetada para: <strong class="text-white">{nova_senha}</strong> (exibir apenas uma vez).', 'info')
         else:
             if len(nova_senha) < 6:
@@ -624,7 +629,6 @@ def mark_message_read(message_id):
     if 'user_id' not in session: abort(403)
     
     try:
-        # Marca a mensagem como lida APENAS se for para o usuário logado
         execute('UPDATE mensagens SET lida = %s WHERE id = %s AND para_usuario = %s',
                 (True, message_id, session['user_id']), commit=True)
         flash('Mensagem marcada como lida.', 'info')
@@ -635,6 +639,4 @@ def mark_message_read(message_id):
 
 
 if __name__ == '__main__':
-    # Em desenvolvimento, o app.run irá criar o DB SQLite
-    # e a função before_request garantirá o admin na primeira requisição
     app.run(debug=True)
