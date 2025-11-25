@@ -1,0 +1,269 @@
+{% extends 'base.html' %}
+{% block conteudo %} {# Alterado de 'content' para 'conteudo' para consistência com base.html #}
+<div class="container" style="padding:28px;max-width:1200px;">
+    <h2 style="color:var(--neon);text-shadow:0 0 12px rgba(155,89,255,0.12)">Painel Administrativo — Future Bank</h2>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div style="margin-top:12px;">
+        {% for category, msg in messages %}
+        <div class="alert {% if category=='success' %}alert-success{% elif category=='danger' %}alert-danger{% elif category=='info' %}alert-info{% else %}alert-secondary{% endif %} alert-dismissible fade show" role="alert">
+            {{ msg | safe }} {# Adicionado '| safe' para renderizar HTML em flashes como a senha temporária #}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button> {# Adicionado aria-label #}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+
+    <div style="display:flex;gap:10px;margin:14px 0;">
+        <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Voltar para Dashboard</a> {# Usando classes Bootstrap #}
+        <a class="btn btn-outline-danger" href="{{ url_for('logout') }}">Sair</a> {# Usando classes Bootstrap #}
+    </div>
+
+    <div class="card"
+        style="padding:18px;margin-bottom:18px;border-radius:12px;border:1px solid rgba(155,89,255,0.06);box-shadow:0 12px 40px rgba(0,0,0,0.6);">
+        <h4 style="color:var(--neon)">📩 Pedidos de Depósito/Saque Pendentes</h4>
+        
+        {% if requests_pendentes %}
+        <div style="overflow:auto">
+            <table class="table table-sm table-dark" style="margin-top:12px;">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Usuário</th>
+                        <th>Tipo</th>
+                        <th>Valor (P$)</th>
+                        <th>Status</th>
+                        <th>Ações</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in requests_pendentes %}
+                    <tr>
+                        <td>{{ r.id }}</td>
+                        <td>{{ r.username }}</td>
+                        <td>{{ 'Depósito' if r.tipo == 'deposit' else 'Saque' }}</td>
+                        <td>P$ {{ '%.2f'|format(r.valor) }}</td>
+                        <td>
+                            {% if r.aprovado == 0 %}
+                            <span class="badge bg-warning text-dark">Pendente</span>
+                            {% elif r.aprovado == 1 %}
+                            <span class="badge bg-success">Aprovado</span>
+                            {% else %}
+                            <span class="badge bg-danger">Rejeitado</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if r.aprovado == 0 %}
+                            <form method="post" action="{{ url_for('process_request', req_id=r.id, action='approve') }}" style="display:inline-block;margin-right:6px;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <button type="submit" class="btn btn-success btn-sm">Aprovar</button>
+                            </form>
+                            <form method="post" action="{{ url_for('process_request', req_id=r.id, action='reject') }}" style="display:inline-block;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <button type="submit" class="btn btn-danger btn-sm">Rejeitar</button>
+                            </form>
+                            {% else %}
+                            —
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="muted">Nenhum pedido pendente de Depósito/Saque.</p>
+        {% endif %}
+    </div>
+
+    <div class="card"
+        style="padding:18px;margin-bottom:18px;border-radius:12px;border:1px solid rgba(155,89,255,0.06);box-shadow:0 12px 40px rgba(0,0,0,0.6);">
+        <h4 style="color:var(--neon)">👥 Gerenciamento de Usuários</h4>
+
+        <div style="overflow:auto">
+            <table class="table table-sm table-dark" style="margin-top:12px;">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Nome</th>
+                        <th>Saldo (P$)</th>
+                        <th>Reset de senha</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in users %}
+                    <tr>
+                        <td>{{ u.id }}</td>
+                        <td>{{ u.username }}</td>
+                        <td>P$ {{ '%.2f'|format(u.saldo) }}</td>
+                        <td style="min-width:340px;">
+                            <form method="post" action="{{ url_for('admin_reset_password') }}" class="d-flex gap-2">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <input type="hidden" name="user_id" value="{{ u.id }}">
+                                <input name="nova_senha" class="form-control form-control-sm"
+                                    placeholder="Nova senha (opcional)">
+                                <button type="submit" class="btn btn-outline-warning btn-sm">Resetar</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card"
+        style="padding:18px;margin-bottom:18px;border-radius:12px;border:1px solid rgba(155,89,255,0.06);box-shadow:0 12px 40px rgba(0,0,0,0.6);">
+        <h4 style="color:var(--neon)">✉️ Enviar Mensagem Individual</h4>
+        <form method="post" action="{{ url_for('admin_send_message') }}" style="margin-top:10px;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="row g-2 align-items-center">
+                <div class="col-auto" style="min-width:260px;">
+                    <label for="message_recipient" class="form-label visually-hidden">Para</label>
+                    <select name="para_id" id="message_recipient" class="form-select form-select-sm" required>
+                        {% for u in users %}
+                        <option value="{{ u.id }}">{{ u.username }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col">
+                    <label for="message_content" class="form-label visually-hidden">Mensagem</label>
+                    <input name="conteudo" id="message_content" class="form-control form-control-sm" placeholder="Mensagem..." required>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary btn-sm">Enviar</button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <div class="card"
+        style="padding:18px;border-radius:12px;border:1px solid rgba(155,89,255,0.06);box-shadow:0 12px 40px rgba(0,0,0,0.6);margin-bottom:18px;">
+        <h4 style="color:var(--neon)">🔍 Log de Auditoria Completo</h4>
+        <p class="muted">Registro detalhado de ações de segurança, login e administração.</p>
+        {% if auditoria %}
+        <div style="overflow:auto;max-height: 400px;margin-top:12px;">
+            <table class="table table-sm table-dark">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Data/Hora</th>
+                        <th>Usuário ID</th>
+                        <th>Usuário</th> {# Adicionado coluna para nome de usuário #}
+                        <th>Evento</th>
+                        <th>Detalhe</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in auditoria %}
+                    <tr>
+                        <td>{{ log.id }}</td>
+                        <td>{{ log.criado_em }}</td>
+                        <td>{{ log.usuario_id or '-' }}</td>
+                        <td>{{ log.username or '-' }}</td> {# Exibir username do log #}
+                        <td>{{ log.evento | upper }}</td>
+                        <td>{{ log.detalhe }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="muted">Nenhum registro de auditoria disponível.</p>
+        {% endif %}
+    </div>
+
+    <div class="card"
+        style="padding:18px;border-radius:12px;border:1px solid rgba(155,89,255,0.06);box-shadow:0 12px 40px rgba(0,0,0,0.6);margin-bottom:40px;">
+        <h4 style="color:var(--neon)">📜 Histórico de Transações Global</h4>
+        <div style="overflow:auto;max-height: 400px;margin-top:12px;"> {# Adicionado max-height para rolagem #}
+            <table class="table table-sm table-dark">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>De</th>
+                        <th>Para</th>
+                        <th>Tipo</th>
+                        <th>Valor</th>
+                        <th>Descrição</th>
+                        <th>Quando</th>
+                        {# Removida coluna "Ações" pois o app.py não tem rota para deletar transações individuais aqui #}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if transacoes %} {# Adicionada verificação se 'transacoes' existe #}
+                        {% for t in transacoes %}
+                        <tr>
+                            <td>{{ t.id }}</td>
+                            <td>{{ t.de_nome or '-' }}</td>
+                            <td>{{ t.para_nome or '-' }}</td>
+                            <td>{{ t.tipo }}</td>
+                            <td>P$ {{ '%.2f'|format(t.valor) }}</td>
+                            <td>{{ t.descricao }}</td>
+                            <td>{{ t.criado_em }}</td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr><td colspan="7">Nenhuma transação global disponível.</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+        {# Removido formulário "Deletar todas as transações" pois o app.py não tem rota para isso no admin #}
+    </div>
+
+    <div style="height:36px"></div>
+</div>
+
+<style>
+    :root {
+        --neon: #9b59ff;
+    }
+
+    body {
+        background: radial-gradient(ellipse at 20% 10%, rgba(155, 89, 255, 0.06) 0%, transparent 20%), #0b0b0f;
+        color: #e6e6ea;
+    }
+
+    .muted {
+        color: rgba(255, 255, 255, 0.45);
+    }
+
+    .btn {
+        color: var(--neon);
+        border-color: rgba(155, 89, 255, 0.12);
+        background: linear-gradient(90deg, rgba(155, 89, 255, 0.12), transparent);
+    }
+
+    .btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 30px rgba(155, 89, 255, 0.06);
+    }
+
+    .card {
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
+        border-radius: 14px;
+    }
+
+    .form-control, .form-select { /* Adicionado .form-select */
+        background: rgba(0, 0, 0, 0.45);
+        color: #fff;
+        border: 1px solid rgba(155, 89, 255, 0.06);
+    }
+    /* Estilo para placeholder */
+    .form-control::placeholder {
+        color: rgba(255, 255, 255, 0.6);
+    }
+
+    .table-dark th,
+    .table-dark td {
+        vertical-align: middle;
+        border-color: rgba(255, 255, 255, 0.03);
+    }
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+{% endblock %}
+```http://googleusercontent.com/image_generation_content/3
