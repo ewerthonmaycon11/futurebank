@@ -1,3 +1,5 @@
 Flask
 python-dotenv
 Werkzeug
+gunicorn          # <<< ESSA LINHA É CRÍTICA E ESTÁ FALTANDO
+psycopg2-binary   # <<< ESSA LINHA TAMBÉM É CRÍTICA E ESTÁ FALTANDO
