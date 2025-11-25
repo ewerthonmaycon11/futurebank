@@ -1,44 +1,49 @@
--- Tabelas: usuarios, transacoes, requests (deposit/withdraw requests), mensagens
-
+-- schema.sql (Para PostgreSQL)
 CREATE TABLE IF NOT EXISTS usuarios (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE NOT NULL,
-  senha_hash TEXT NOT NULL,
-  saldo REAL NOT NULL DEFAULT 0,
-  criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(80) UNIQUE NOT NULL,
+    senha_hash VARCHAR(255) NOT NULL,
+    saldo NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+    criado_em TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS transacoes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  de_usuario INTEGER,
-  para_usuario INTEGER,
-  tipo TEXT NOT NULL, -- deposit, withdraw, transfer, admin_credit, admin_debit
-  valor REAL NOT NULL,
-  descricao TEXT,
-  criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS requests (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  usuario_id INTEGER NOT NULL,
-  tipo TEXT NOT NULL, -- deposit, withdraw
-  valor REAL NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pendente', -- pendente, aprovado, rejeitado
-  criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+    id SERIAL PRIMARY KEY,
+    de_usuario INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+    para_usuario INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+    tipo VARCHAR(50) NOT NULL,
+    valor NUMERIC(10, 2) NOT NULL,
+    descricao VARCHAR(255),
+    criado_em TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS mensagens (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  de_admin INTEGER DEFAULT 1,
-  para_usuario INTEGER NOT NULL,
-  conteudo TEXT NOT NULL,
-  criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+    id SERIAL PRIMARY KEY,
+    para_usuario INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+    de_usuario INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+    assunto VARCHAR(255),
+    corpo TEXT NOT NULL,
+    lida BOOLEAN NOT NULL DEFAULT FALSE,
+    criado_em TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS requests (
+    id SERIAL PRIMARY KEY,
+    usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+    tipo VARCHAR(10) NOT NULL,
+    valor NUMERIC(10, 2) NOT NULL,
+    aprovado INTEGER NOT NULL DEFAULT 0,
+    criado_em TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS auditoria (
-    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-    evento TEXT NOT NULL,
+    id SERIAL PRIMARY KEY,
+    evento VARCHAR(100) NOT NULL,
     detalhe TEXT,
-    usuario_id INTEGER,
-    criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+    usuario_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+    criado_em TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    ip_address VARCHAR(45)
 );
+
+-- Note que a criação do usuário 'admin' será feita pelo app.py no primeiro boot.
