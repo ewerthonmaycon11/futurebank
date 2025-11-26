@@ -8,7 +8,7 @@ from decimal import Decimal, ROUND_DOWN, InvalidOperation
 # IMPORTS PARA POSTGRESQL
 import psycopg2
 from psycopg2.extras import DictCursor
-from urllib.parse import urlparse
+from urllib.parse import urlparse # Mantido para depuração, se necessário
 # FIM NOVOS IMPORTS
 
 from flask import (
@@ -24,6 +24,7 @@ ADMIN_USERNAME = 'admin'
 # Define explicitamente a pasta de templates para evitar TemplateNotFound
 # Isso garante que o Flask encontre a pasta "templates" no mesmo diretório do app.py
 template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
+print(f"DEBUG: Pasta de templates configurada para: {template_dir}") # DEBUG
 app = Flask(__name__, template_folder=template_dir)
 
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_urlsafe(32))
@@ -35,7 +36,7 @@ DB_URL = os.environ.get('DATABASE_URL')
 global_db_type = 'sqlite' # Default para desenvolvimento local
 
 if DB_URL:
-    print("Detectado DATABASE_URL. Tentando usar PostgreSQL (Neon)...")
+    print(f"DEBUG: DATABASE_URL detectada: {DB_URL}") # DEBUG: Imprime a URL para inspecção
     global_db_type = 'postgresql'
 else:
     print(f"ATENÇÃO: DATABASE_URL não definida. Usando SQLite localmente em: {DB_FILE}")
@@ -49,6 +50,8 @@ def get_db():
         
         if conn_type_for_this_request == 'postgresql':
             try:
+                # CORREÇÃO CRÍTICA PARA DSN: Se a URL já for completa, psycopg2 a entende.
+                # Se houver problemas com "psql", significa que a DATABASE_URL NÃO ESTÁ CORRETA.
                 g.db = psycopg2.connect(DB_URL, sslmode='require')
                 g.db.autocommit = False # Usaremos commits explícitos
                 print("Conexão com PostgreSQL estabelecida com sucesso.")
@@ -64,8 +67,7 @@ def get_db():
             g.db = sqlite3.connect(DB_FILE)
             g.db.row_factory = sqlite3.Row
             g.db.execute('PRAGMA foreign_keys = ON;')
-            if global_db_type == 'sqlite': # Só imprime se for o modo padrão
-                print("Conexão com SQLite estabelecida.")
+            print("Conexão com SQLite estabelecida (ou fallback).")
         
         # Armazena o tipo de DB usado na conexão atual no g para acesso posterior
         g.current_db_type_used = conn_type_for_this_request 
@@ -116,66 +118,71 @@ def query(query_sql, args=(), one=False):
 
 
 # ----------------- Inicialização do DB e Admin -----------------
+def create_sqlite_tables(db_path):
+    """Cria tabelas SQLite se não existirem."""
+    db_sqlite = sqlite3.connect(db_path)
+    try:
+        with db_sqlite:
+            db_sqlite.executescript("""
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                senha_hash TEXT NOT NULL,
+                saldo NUMERIC NOT NULL DEFAULT 0.00,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS transacoes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                de_usuario INTEGER,
+                para_usuario INTEGER,
+                tipo TEXT,
+                valor NUMERIC,
+                descricao TEXT,
+                criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(de_usuario) REFERENCES usuarios(id) ON DELETE SET NULL,
+                FOREIGN KEY(para_usuario) REFERENCES usuarios(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS mensagens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                para_usuario INTEGER,
+                de_usuario INTEGER,
+                assunto TEXT,
+                corpo TEXT,
+                lida INTEGER DEFAULT 0,
+                criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(para_usuario) REFERENCES usuarios(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usuario_id INTEGER,
+                tipo TEXT,
+                valor NUMERIC,
+                aprovado INTEGER DEFAULT 0,
+                criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS auditoria (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                evento TEXT,
+                detalhe TEXT,
+                usuario_id INTEGER,
+                criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+                ip_address TEXT
+            );
+            """)
+        print("Tabelas SQLite criadas/verificadas.")
+    finally:
+        db_sqlite.close()
+
+
 def init_db_and_admin_user():
     print("Executando init_db_and_admin_user()...")
     
-    # Usa global_db_type aqui, pois está acessível e definido no escopo do módulo
-    if global_db_type == 'sqlite' and not Path(DB_FILE).exists():
-        print(f"Criando banco de dados SQLite local em {DB_FILE}...")
-        db_sqlite = sqlite3.connect(DB_FILE) # Conexão separada para a criação inicial
-        try:
-            with db_sqlite:
-                db_sqlite.executescript("""
-                CREATE TABLE IF NOT EXISTS usuarios (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    senha_hash TEXT NOT NULL,
-                    saldo NUMERIC NOT NULL DEFAULT 0.00,
-                    is_admin INTEGER NOT NULL DEFAULT 0,
-                    criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS transacoes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    de_usuario INTEGER,
-                    para_usuario INTEGER,
-                    tipo TEXT,
-                    valor NUMERIC,
-                    descricao TEXT,
-                    criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(de_usuario) REFERENCES usuarios(id) ON DELETE SET NULL,
-                    FOREIGN KEY(para_usuario) REFERENCES usuarios(id) ON DELETE SET NULL
-                );
-                CREATE TABLE IF NOT EXISTS mensagens (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    para_usuario INTEGER,
-                    de_usuario INTEGER,
-                    assunto TEXT,
-                    corpo TEXT,
-                    lida INTEGER DEFAULT 0,
-                    criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(para_usuario) REFERENCES usuarios(id) ON DELETE CASCADE
-                );
-                CREATE TABLE IF NOT EXISTS requests (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    usuario_id INTEGER,
-                    tipo TEXT,
-                    valor NUMERIC,
-                    aprovado INTEGER DEFAULT 0,
-                    criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
-                );
-                CREATE TABLE IF NOT EXISTS auditoria (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    evento TEXT,
-                    detalhe TEXT,
-                    usuario_id INTEGER,
-                    criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    ip_address TEXT
-                );
-                """)
-            print("Tabelas SQLite criadas.")
-        finally:
-            db_sqlite.close()
+    # Se estamos no modo SQLite, garantir que as tabelas existam
+    if global_db_type == 'sqlite':
+        print(f"Verificando/Criando tabelas SQLite local em {DB_FILE}...")
+        create_sqlite_tables(DB_FILE)
     
     # Lógica de criação de admin para ambos os tipos de DB
     try:
@@ -640,4 +647,4 @@ def mark_message_read(message_id):
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True
