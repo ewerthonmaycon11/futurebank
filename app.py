@@ -89,7 +89,9 @@ def execute(query_sql, params=(), fetchone=False, fetchall=False, commit=False):
 
     if current_db_type == 'postgresql':
         cur = db.cursor(cursor_factory=DictCursor)
-        if not isinstance(params, (tuple, list)):
+        # Psycopg2 espera uma tupla ou lista para os parâmetros, mesmo que seja um único.
+        # Mas não devemos converter uma lista de tuplas (para executemany) em uma tupla simples.
+        if params and not isinstance(params, (tuple, list)):
             params = (params,)
         cur.execute(query_sql, params)
         
@@ -175,15 +177,93 @@ def create_sqlite_tables(db_path):
     finally:
         db_sqlite.close()
 
+def create_postgresql_tables(db_connection):
+    """Cria tabelas PostgreSQL se não existirem."""
+    with db_connection.cursor() as cur:
+        # Tabela usuarios
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                senha_hash TEXT NOT NULL,
+                saldo NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+                is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        # Tabela transacoes
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS transacoes (
+                id SERIAL PRIMARY KEY,
+                de_usuario INTEGER,
+                para_usuario INTEGER,
+                tipo TEXT,
+                valor NUMERIC(10, 2),
+                descricao TEXT,
+                criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(de_usuario) REFERENCES usuarios(id) ON DELETE SET NULL,
+                FOREIGN KEY(para_usuario) REFERENCES usuarios(id) ON DELETE SET NULL
+            );
+        """)
+        # Tabela mensagens
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS mensagens (
+                id SERIAL PRIMARY KEY,
+                para_usuario INTEGER,
+                de_usuario INTEGER,
+                assunto TEXT,
+                corpo TEXT,
+                lida BOOLEAN DEFAULT FALSE,
+                criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(para_usuario) REFERENCES usuarios(id) ON DELETE CASCADE
+            );
+        """)
+        # Tabela requests
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS requests (
+                id SERIAL PRIMARY KEY,
+                usuario_id INTEGER,
+                tipo TEXT,
+                valor NUMERIC(10, 2),
+                aprovado INTEGER DEFAULT 0,
+                criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+            );
+        """)
+        # Tabela auditoria
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS auditoria (
+                id SERIAL PRIMARY KEY,
+                evento TEXT,
+                detalhe TEXT,
+                usuario_id INTEGER,
+                criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                ip_address TEXT
+            );
+        """)
+    db_connection.commit()
+    print("Tabelas PostgreSQL criadas/verificadas.")
 
 def init_db_and_admin_user():
     print("Executando init_db_and_admin_user()...")
     
+    # Obter a conexão de DB para o contexto atual
+    db_conn = get_db() # Isso garantirá que g.current_db_type_used esteja setado
+
     # Se estamos no modo SQLite, garantir que as tabelas existam
-    if global_db_type == 'sqlite':
+    if g.current_db_type_used == 'sqlite': # Use g.current_db_type_used aqui
         print(f"Verificando/Criando tabelas SQLite local em {DB_FILE}...")
         create_sqlite_tables(DB_FILE)
-    
+    elif g.current_db_type_used == 'postgresql': # Adicionar esta parte
+        print("Verificando/Criando tabelas PostgreSQL...")
+        try:
+            create_postgresql_tables(db_conn) # Passa a conexão já estabelecida
+        except Exception as e:
+            print(f"ERRO ao criar tabelas PostgreSQL: {e}")
+            traceback.print_exc()
+            # Este erro é crítico, talvez devamos abortar ou fazer um fallback mais agressivo
+            # Por enquanto, vamos deixar continuar para ver outros erros, mas em produção isso seria um problema.
+            
     # Lógica de criação de admin para ambos os tipos de DB
     try:
         # A função query já usa get_db(), que estará no contexto correto
@@ -265,50 +345,61 @@ def create_transaction_atomic(de_id, para_id, tipo, valor_decimal, descricao='')
     current_db_type = g.current_db_type_used
 
     try:
-        cur = db.cursor()
+        # Use um cursor com o tipo de DB correto
+        if current_db_type == 'postgresql':
+            cur = db.cursor(cursor_factory=DictCursor)
+        else: # SQLite
+            cur = db.cursor()
 
         # 1. Verifica e Debita Origem (se houver)
         if de_id:
+            # Adapta placeholders para SQLite se necessário
+            query_saldo_origem = 'SELECT saldo FROM usuarios WHERE id = %s'
+            query_update_origem = 'UPDATE usuarios SET saldo = %s WHERE id = %s'
+            if current_db_type == 'sqlite':
+                query_saldo_origem = query_saldo_origem.replace('%s', '?')
+                query_update_origem = query_update_origem.replace('%s', '?')
+
+            # Bloqueio de linha para PostgreSQL (FOR UPDATE)
             if current_db_type == 'postgresql':
-                cur.execute('SELECT saldo FROM usuarios WHERE id = %s FOR UPDATE', (de_id,))
-            else: # SQLite
-                cur.execute('SELECT saldo FROM usuarios WHERE id = ?', (de_id,))
+                cur.execute(query_saldo_origem + ' FOR UPDATE', (de_id,))
+            else: # SQLite não tem FOR UPDATE, confia na atomicidade da transação
+                cur.execute(query_saldo_origem, (de_id,))
 
             row = cur.fetchone()
             if not row: raise ValueError("Usuário de origem não encontrado.")
-            saldo_origem = Decimal(row[0])
+            saldo_origem = Decimal(str(row[0])) # Convertido para str antes de Decimal para compatibilidade
             if saldo_origem < valor_decimal:
                 raise ValueError(f"Saldo insuficiente. Disponível: P {saldo_origem}")
             
             novo_origem = saldo_origem - valor_decimal
-            if current_db_type == 'postgresql':
-                cur.execute('UPDATE usuarios SET saldo = %s WHERE id = %s', (str(novo_origem), de_id))
-            else: # SQLite
-                cur.execute('UPDATE usuarios SET saldo = ? WHERE id = ?', (str(novo_origem), de_id))
+            cur.execute(query_update_origem, (str(novo_origem), de_id))
 
         # 2. Credita Destino (se houver)
         if para_id:
+            query_saldo_destino = 'SELECT saldo FROM usuarios WHERE id = %s'
+            query_update_destino = 'UPDATE usuarios SET saldo = saldo + %s WHERE id = %s'
+            if current_db_type == 'sqlite':
+                query_saldo_destino = query_saldo_destino.replace('%s', '?')
+                query_update_destino = query_update_destino.replace('%s', '?')
+
             if current_db_type == 'postgresql':
-                cur.execute('SELECT saldo FROM usuarios WHERE id = %s FOR UPDATE', (para_id,))
-            else: # SQLite
-                cur.execute('SELECT saldo FROM usuarios WHERE id = ?', (para_id,))
+                cur.execute(query_saldo_destino + ' FOR UPDATE', (para_id,))
+            else:
+                cur.execute(query_saldo_destino, (para_id,))
             
             if not cur.fetchone(): raise ValueError("Usuário destino não encontrado.")
             
-            if current_db_type == 'postgresql':
-                cur.execute('UPDATE usuarios SET saldo = saldo + %s WHERE id = %s', (str(valor_decimal), para_id))
-            else: # SQLite
-                cur.execute('UPDATE usuarios SET saldo = saldo + ? WHERE id = ?', (str(valor_decimal), para_id))
+            cur.execute(query_update_destino, (str(valor_decimal), para_id))
 
         # 3. Registra Transação
-        if current_db_type == 'postgresql':
-            cur.execute('''INSERT INTO transacoes (de_usuario, para_usuario, tipo, valor, descricao) 
-                                VALUES (%s,%s,%s,%s,%s)''',
-                        (de_id, para_id, tipo, str(valor_decimal), descricao))
-        else: # SQLite
-             cur.execute('''INSERT INTO transacoes (de_usuario, para_usuario, tipo, valor, descricao) 
-                                VALUES (?,?,?,?,?)''',
-                        (de_id, para_id, tipo, str(valor_decimal), descricao))
+        query_insert_transacao = '''INSERT INTO transacoes (de_usuario, para_usuario, tipo, valor, descricao) 
+                                 VALUES (%s,%s,%s,%s,%s)'''
+        if current_db_type == 'sqlite':
+            query_insert_transacao = query_insert_transacao.replace('%s', '?')
+
+        cur.execute(query_insert_transacao,
+                            (de_id, para_id, tipo, str(valor_decimal), descricao))
         
         db.commit()
         log_auditoria('transacao_sucesso', f'{tipo} | P {valor_decimal} | {descricao}', usuario_id=de_id or para_id)
@@ -321,11 +412,14 @@ def create_transaction_atomic(de_id, para_id, tipo, valor_decimal, descricao='')
 # ----------------- CSRF -----------------
 @app.before_request
 def csrf_protect():
+    # Ignorar CSRF para métodos GET e para rotas de webhook/API que você possa ter no futuro
     if request.method == "POST":
         token_form = request.form.get('csrf_token')
         token_sess = session.get('csrf_token')
         if not token_form or not token_sess or token_form != token_sess:
-            abort(400, description="Token de segurança inválido (CSRF). Tente recarregar a página.")
+            # Em vez de abort(400), podemos redirecionar com uma mensagem
+            flash("Erro de segurança: Token inválido. Por favor, tente novamente.", "danger")
+            return redirect(request.url) # Redireciona para a mesma página, forçando recarregamento
 
 def ensure_csrf():
     if 'csrf_token' not in session:
@@ -354,6 +448,8 @@ def login():
         if user and check_password_hash(user['senha_hash'], senha):
             session['user_id'] = user['id']
             session['username'] = user['username']
+            # Para SQLite, is_admin é INTEGER (0 ou 1). Para PostgreSQL, é BOOLEAN (False ou True).
+            # A conversão para bool() lida com ambos.
             session['is_admin'] = bool(user['is_admin'])
             log_auditoria('login', f'Usuário {username} logado', usuario_id=user['id'])
             return redirect(url_for('dashboard'))
