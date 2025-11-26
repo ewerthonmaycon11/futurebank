@@ -1,0 +1,395 @@
+{% extends "base.html" %}
+{% block conteudo %}
+
+<style>
+    :root {
+        /* Paleta de Cores Bancária Profissional */
+        --bank-blue-dark: #0a1f3d; /* Azul corporativo profundo */
+        --bank-blue-mid: #1a3b6e; /* Azul médio para cartões */
+        --bank-accent: #0056b3; /* Azul de ação principal */
+        --bank-accent-hover: #004494;
+        --bank-text-primary: #ffffff;
+        --bank-text-secondary: #b8ccec;
+        --bank-bg-light: #f4f7f9; /* Fundo geral claro */
+        --bank-success: #28a745;
+        --bank-danger: #dc3545;
+        --bank-warning: #ffc107;
+    }
+
+    body {
+        background-color: var(--bank-bg-light);
+        color: #333;
+        font-family: 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    }
+
+    /* Layout */
+    .dashboard-container {
+        padding: 40px 20px;
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+
+    .dashboard-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 35px;
+    }
+
+    .dashboard-header h3 {
+        color: var(--bank-blue-dark);
+        font-weight: 700;
+        margin: 0;
+    }
+
+    .grid-wrapper {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr; /* Coluna da esquerda mais larga */
+        gap: 30px;
+    }
+
+    @media (max-width: 992px) {
+        .grid-wrapper {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    /* ======== CARDS ======== */
+    .bank-card {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.05); /* Sombra suave e limpa */
+        padding: 30px;
+        border: 1px solid #e1e5eb;
+        transition: transform 0.2s ease;
+    }
+
+    /* Card de Saldo Principal (Destaque) */
+    .bank-card.balance-card {
+        background: linear-gradient(135deg, var(--bank-blue-mid), var(--bank-blue-dark));
+        color: var(--bank-text-primary);
+        border: none;
+    }
+
+    .bank-card h4 {
+        font-size: 1.2rem;
+        font-weight: 600;
+        margin-bottom: 25px;
+        color: var(--bank-blue-dark);
+        display: flex;
+        align-items: center;
+    }
+    
+    .balance-card h4 { color: var(--bank-text-secondary); }
+    .balance-card h4 i { margin-right: 10px; }
+
+    .saldo-amount {
+        font-size: 3.5rem;
+        font-weight: 800;
+        color: var(--bank-text-primary);
+        letter-spacing: -1px;
+        line-height: 1;
+    }
+
+    .currency-symbol {
+        font-size: 2rem;
+        color: var(--bank-text-secondary);
+        margin-right: 5px;
+    }
+
+    /* ======== FORMS ======== */
+    .form-label {
+        font-weight: 600;
+        color: var(--bank-blue-dark);
+        font-size: 0.9rem;
+        margin-bottom: 8px;
+    }
+
+    .form-control, .form-select {
+        border: 2px solid #e9ecef;
+        border-radius: 8px;
+        padding: 12px 15px;
+        font-size: 1rem;
+        color: var(--bank-blue-dark);
+        background-color: #fff;
+        transition: border-color 0.2s;
+    }
+
+    .form-control:focus, .form-select:focus {
+        border-color: var(--bank-accent);
+        box-shadow: none; /* Remove o glow padrão do bootstrap */
+        outline: none;
+    }
+
+    .input-group-text {
+        background: #e9ecef;
+        border: 2px solid #e9ecef;
+        border-right: none;
+        color: var(--bank-blue-mid);
+        font-weight: 600;
+    }
+    .input-group .form-control { border-left: none; }
+
+    /* Botões */
+    .btn-bank {
+        width: 100%;
+        padding: 14px;
+        border-radius: 8px;
+        font-weight: 700;
+        font-size: 1rem;
+        border: none;
+        cursor: pointer;
+        transition: background 0.2s;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    .btn-bank i { margin-right: 10px; }
+
+    .btn-primary-action {
+        background-color: var(--bank-accent);
+        color: #fff;
+    }
+    .btn-primary-action:hover { background-color: var(--bank-accent-hover); }
+
+    .btn-secondary-action {
+        background-color: var(--bank-blue-mid);
+        color: #fff;
+    }
+    .btn-secondary-action:hover { background-color: var(--bank-blue-dark); }
+
+    /* ======== TABELAS E LISTAS ======== */
+    .table-container {
+        overflow-x: auto;
+    }
+
+    .bank-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0 10px; /* Espaço entre linhas */
+    }
+
+    .bank-table th {
+        text-align: left;
+        color: #8898aa;
+        font-weight: 600;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        padding: 10px 15px;
+    }
+
+    .bank-table td {
+        background: #fff;
+        padding: 15px;
+        vertical-align: middle;
+        color: var(--bank-blue-dark);
+        border-top: 1px solid #eee;
+        border-bottom: 1px solid #eee;
+    }
+    .bank-table tr td:first-child { border-left: 1px solid #eee; border-top-left-radius: 10px; border-bottom-left-radius: 10px; }
+    .bank-table tr td:last-child { border-right: 1px solid #eee; border-top-right-radius: 10px; border-bottom-right-radius: 10px; }
+
+    .transaction-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-right: 15px;
+        font-size: 1.2rem;
+    }
+    .icon-sent { background: #fdecec; color: var(--bank-danger); }
+    .icon-received { background: #e8f7ed; color: var(--bank-success); }
+
+    /* Badges Status */
+    .status-badge {
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+    }
+    .status-pending { background: #fff3cd; color: #856404; }
+    .status-completed { background: #d4edda; color: #155724; }
+    .status-rejected { background: #f8d7da; color: #721c24; }
+
+</style>
+
+<div class="dashboard-container">
+    <div class="dashboard-header">
+        <div>
+            <h3>Olá, {{ user.username }}</h3>
+            <p class="text-muted mb-0">Bem-vindo ao seu Internet Banking FutureBank.</p>
+        </div>
+        <div class="text-end">
+            <span class="text-muted" style="font-size: 0.9rem;">Último acesso: Hoje</span>
+        </div>
+    </div>
+
+    <div class="grid-wrapper">
+        <div style="display: flex; flex-direction: column; gap: 30px;">
+            
+            <div class="bank-card balance-card">
+                <h4><i class="fas fa-wallet"></i> Saldo Disponível em Conta</h4>
+                <div>
+                    <span class="currency-symbol">P</span>
+                    <span class="saldo-amount">{{ "%.2f"|format(user.saldo) }}</span>
+                </div>
+                <p class="mb-0 mt-3" style="color: var(--bank-text-secondary); font-size: 0.9rem;">
+                    <i class="fas fa-check-circle me-1"></i> Moeda oficial FutureBank (Phuturium)
+                </p>
+            </div>
+
+             <div class="bank-card">
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h4 class="mb-0">Últimas Transações</h4>
+                    <a href="{{ url_for('history') }}" class="btn btn-sm btn-outline-primary">Ver Extrato Completo</a>
+                </div>
+
+                {% if transacoes %}
+                <div class="table-container">
+                    <table class="bank-table">
+                        <tbody>
+                            {% for t in transacoes %}
+                            <tr>
+                                <td style="width: 50px;">
+                                    {% if t.para_usuario == user.id %}
+                                    <div class="transaction-icon icon-received"><i class="fas fa-arrow-down"></i></div>
+                                    {% else %}
+                                    <div class="transaction-icon icon-sent"><i class="fas fa-arrow-up"></i></div>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <div style="font-weight: 600;">
+                                        {% if t.tipo == 'transferencia' %}
+                                            {% if t.para_usuario == user.id %}
+                                                Recebido de {{ t.de_nome }}
+                                            {% else %}
+                                                Enviado para {{ t.para_nome }}
+                                            {% endif %}
+                                        {% elif t.tipo == 'deposito_aprovado' %}
+                                            Depósito em Conta
+                                        {% elif t.tipo == 'saque_aprovado' %}
+                                            Saque Realizado
+                                        {% else %}
+                                            {{ t.tipo|capitalize }}
+                                        {% endif %}
+                                    </div>
+                                    <small class="text-muted">{{ t.criado_em }}</small>
+                                </td>
+                                <td class="text-end" style="font-weight: 700; font-size: 1.1rem;">
+                                    {% if t.para_usuario == user.id or t.tipo == 'deposito_aprovado' %}
+                                        <span class="text-success">+ P {{ "%.2f"|format(t.valor) }}</span>
+                                    {% else %}
+                                        <span class="text-danger">- P {{ "%.2f"|format(t.valor) }}</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-muted text-center py-4">Nenhuma transação recente.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 30px;">
+            
+            <div class="bank-card">
+                <h4><i class="fas fa-paper-plane me-2"></i> Realizar Transferência</h4>
+                <p class="text-muted mb-4" style="font-size: 0.9rem;">Envie Phuturium instantaneamente para outro usuário.</p>
+                
+                <form method="post" action="{{ url_for('realizar_transferencia') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Destinatário (Username)</label>
+                        <input type="text" name="destinatario" class="form-control" placeholder="Ex: joaosilva" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Valor da Transferência</label>
+                        <div class="input-group">
+                            <span class="input-group-text">P</span>
+                            <input type="number" step="0.01" name="valor" class="form-control" placeholder="0,00" required min="0.01">
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="form-label">Sua Senha de Acesso (Confirmação)</label>
+                        <input type="password" name="senha_confirmacao" class="form-control" placeholder="••••••••" required>
+                        <small class="text-muted">Necessário para autorizar a operação.</small>
+                    </div>
+
+                    <button type="submit" class="btn-bank btn-primary-action">
+                        <i class="fas fa-check"></i> Confirmar Transferência
+                    </button>
+                </form>
+            </div>
+
+            <div class="bank-card">
+                <h4><i class="fas fa-exchange-alt me-2"></i> Solicitar Depósito ou Saque</h4>
+                <p class="text-muted mb-4" style="font-size: 0.9rem;">Crie uma solicitação para adicionar ou retirar fundos.</p>
+
+                <form method="post" action="{{ url_for('solicitar_operacao') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Tipo de Operação</label>
+                        <select name="tipo_operacao" class="form-select">
+                            <option value="deposit">Depósito (Adicionar Phuturium)</option>
+                            <option value="withdraw">Saque (Retirar Phuturium)</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Valor</label>
+                        <div class="input-group">
+                            <span class="input-group-text">P</span>
+                            <input type="number" step="0.01" name="valor" class="form-control" placeholder="0,00" required min="0.01">
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="form-label">Sua Senha de Acesso (Confirmação)</label>
+                        <input type="password" name="senha_confirmacao" class="form-control" placeholder="••••••••" required>
+                    </div>
+
+                    <button type="submit" class="btn-bank btn-secondary-action">
+                        <i class="fas fa-file-import"></i> Enviar Solicitação
+                    </button>
+                </form>
+
+                {% if requests %}
+                <hr class="my-4" style="border-color: #eee;">
+                <h6 style="color: var(--bank-blue-dark); font-weight: 700;">Suas Solicitações Recentes</h6>
+                <div class="table-container mt-3">
+                    <table class="bank-table" style="font-size: 0.9rem;">
+                        <thead><tr><th>Data</th><th>Tipo</th><th>Valor</th><th>Status</th></tr></thead>
+                        <tbody>
+                            {% for r in requests %}
+                            <tr>
+                                <td>{{ r.criado_em.split(' ')[0] }}</td>
+                                <td>{{ 'Depósito' if r.tipo == 'deposit' else 'Saque' }}</td>
+                                <td style="font-weight:600;">P {{ "%.2f"|format(r.valor) }}</td>
+                                <td>
+                                    {% if r.aprovado == 0 %} <span class="status-badge status-pending">Análise</span>
+                                    {% elif r.aprovado == 1 %} <span class="status-badge status-completed">Aprovado</span>
+                                    {% else %} <span class="status-badge status-rejected">Rejeitado</span> {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+            </div>
+
+        </div> </div> </div>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+{% endblock %}

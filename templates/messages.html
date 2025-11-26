@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block conteudo %}
+<div class="container py-4">
+  <h3>Mensagens</h3>
+  {% if mensagens %}
+    <ul class="list-group">
+      {% for msg in mensagens %}
+        <li class="list-group-item bg-dark text-white">
+          {{ msg.criado_em }} - {{ msg.conteudo }}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>Você não tem mensagens.</p>
+  {% endif %}
+</div>
+{% endblock %}
